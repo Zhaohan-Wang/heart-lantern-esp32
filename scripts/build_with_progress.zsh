@@ -5,18 +5,16 @@
 #   zsh scripts/build_with_progress.zsh --flash   # 构建 + 烧录
 #
 # 另开终端实时看日志:
-#   tail -f /tmp/hw_oled_build.log
+#   tail -f /tmp/heart_lantern_build.log
 
 set -e
 set -o pipefail
 
-PROJECT=/Users/wangzhaohan/Documents/GitHub/heart-lantern-esp32
-IDF=/Users/wangzhaohan/esp/v5.4.1/esp-idf
-IDF_TOOLS=/Users/wangzhaohan/.espressif
-IDF_VENV="$IDF_TOOLS/python_env/idf5.4_py3.12_env"
-IDF_PY="$IDF_VENV/bin/python"
+SCRIPT_DIR=${0:A:h}
+PROJECT=${PROJECT:-${SCRIPT_DIR:h}}
+IDF=${IDF_PATH:-$HOME/esp/v5.4.1/esp-idf}
+IDF_TOOLS=${IDF_TOOLS_PATH:-$HOME/.espressif}
 IDF_CLI="$IDF/tools/idf.py"
-ESPTOOL="$IDF_PY"
 LOG=/tmp/heart_lantern_build.log
 BUILD_FLAG=/tmp/heart_lantern_build_building
 HEARTBEAT_SEC=8
@@ -25,6 +23,21 @@ DO_FLASH=false
 if [[ "${1:-}" == "--flash" ]]; then
   DO_FLASH=true
 fi
+
+find_idf_python() {
+  if [[ -n "${IDF_PYTHON_ENV_PATH:-}" && -x "$IDF_PYTHON_ENV_PATH/bin/python" ]]; then
+    echo "$IDF_PYTHON_ENV_PATH/bin/python"
+    return 0
+  fi
+
+  local candidates=("$IDF_TOOLS"/python_env/idf5.4_py*_env/bin/python(N))
+  if (( ${#candidates} > 0 )); then
+    echo "${candidates[-1]}"
+    return 0
+  fi
+
+  return 1
+}
 
 progress() {
   echo ""
@@ -101,8 +114,20 @@ pkill -9 -f "activate.py --export" 2>/dev/null || true
 sleep 1
 
 progress "[1/6] 检查工具链"
-$IDF_PY -c "import serial; print('py3.12 serial OK')"
-$ESPTOOL -m esptool version
+if [[ ! -f "$IDF_CLI" ]]; then
+  echo "ERROR: ESP-IDF not found at $IDF"
+  echo "Install it first, or set IDF_PATH=/path/to/esp-idf."
+  exit 1
+fi
+
+IDF_PY=$(find_idf_python) || {
+  echo "ERROR: ESP-IDF Python environment not found under $IDF_TOOLS/python_env"
+  echo "Run: cd $IDF && ./install.sh esp32s3"
+  exit 1
+}
+
+$IDF_PY -c "import serial; print('idf python serial OK')"
+$IDF_PY -m esptool version
 test -x "$IDF_TOOLS/tools/xtensa-esp-elf/esp-14.2.0_20241119/xtensa-esp-elf/bin/xtensa-esp32s3-elf-gcc"
 
 progress "[2/6] 加载 ESP-IDF 环境（仅 export，跳过 zsh 补全）"
@@ -110,9 +135,9 @@ unset PYTHONPATH PYTHONHOME
 export CONDA_AUTO_ACTIVATE_BASE=false
 export CONDA_SHLVL=0
 export IDF_PATH="$IDF"
-export IDF_PYTHON_ENV_PATH="$IDF_VENV"
+export IDF_PYTHON_ENV_PATH="${IDF_PY:h:h}"
 export PYTHONUNBUFFERED=1
-ENV_CACHE="$HOME/.espressif/hw_oled_idf_env.zsh"
+ENV_CACHE="$IDF_TOOLS/heart_lantern_idf_env.zsh"
 if [[ -s "$ENV_CACHE" ]]; then
   echo "使用缓存环境: $ENV_CACHE"
   source "$ENV_CACHE"
@@ -150,14 +175,22 @@ if [[ "$BUILD_EXIT" -ne 0 ]]; then
   exit "$BUILD_EXIT"
 fi
 
-if [[ ! -f build/build.ninja ]]; then
-  echo "ERROR: build/build.ninja 不存在，构建未真正完成"
+if [[ ! -f build/build.ninja && ! -f build/Makefile ]]; then
+  echo "ERROR: build/build.ninja 和 build/Makefile 都不存在，构建未真正完成"
   exit 1
 fi
 
 progress "[4/6] 验证 main.c"
-if ! grep -q "main.c" build/build.ninja; then
-  echo "ERROR: build.ninja 里没有 main.c"
+if [[ -f build/compile_commands.json ]]; then
+  BUILD_GRAPH=build/compile_commands.json
+elif [[ -f build/build.ninja ]]; then
+  BUILD_GRAPH=build/build.ninja
+else
+  BUILD_GRAPH=build/Makefile
+fi
+
+if ! grep -q "main.c" "$BUILD_GRAPH"; then
+  echo "ERROR: $BUILD_GRAPH 里没有 main.c"
   exit 1
 fi
 echo "OK: main.c 已在构建图中"
@@ -165,9 +198,9 @@ ls -la build/heart_lantern.bin
 
 if [[ "$DO_FLASH" == true ]]; then
   progress "[5/6] 烧录"
-  PORT="${ESPPORT:-/dev/cu.usbserial-210}"
+  PORT="${ESPPORT:-}"
   if [[ ! -e "$PORT" ]]; then
-    PORT=$(find /dev -maxdepth 1 \( -name 'cu.usbserial-*' -o -name 'cu.usbmodem*' \) 2>/dev/null | sort | tail -1)
+    PORT=$(find /dev -maxdepth 1 \( -name 'cu.usbserial*' -o -name 'cu.usbmodem*' \) 2>/dev/null | sort | tail -1)
   fi
   if [[ -z "$PORT" ]] || [[ ! -e "$PORT" ]]; then
     echo "ERROR: 未找到串口（可 export ESPPORT=/dev/cu.xxx）"
