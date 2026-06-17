@@ -1,0 +1,10 @@
+build/
+sdkconfig
+sdkconfig.old
+managed_components/
+dependencies.lock
+.cache/
+
+# 本地 Wi-Fi / MQTT 凭据（勿提交）
+main/digital_heritage_credentials.h
+main/heritage/digital_heritage_credentials.h
